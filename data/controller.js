@@ -1,0 +1,25 @@
+/* USB Serial controller. CTRL packets carry one atomic snapshot of all inputs. */
+'use strict';
+window.EncoderController = (() => {
+  const game=window.Drive,$=id=>document.getElementById(id);
+  // When hosted by the ESP32 access point, poll the built-in Wi-Fi controller.
+  if(window.location?.hostname==='192.168.4.1' && window.EncoderWifiController) return window.EncoderWifiController.create(game,$);
+  let port=null,reader=null,readTask=null,opening=false,closing=false;
+  let seen=false,fullControls=false,lastValid=0,stale=false,armed=false;
+  const serialAvailable=!!navigator.serial&&window.isSecureContext;
+  function disarm(){armed=false;game.input.accel=game.input.brake=0;game.input.releaseRequired=!!port&&fullControls}
+  game.setHardwareReset(disarm);
+  function ui(){const ready=!!port&&seen&&!stale;$('connect').disabled=opening||closing;$('connect').textContent=port?'Disconnect':'Connect ESP32';$('connection').classList.toggle('live',ready);$('connection').textContent=opening?'Connecting…':port?(stale?'Signal lost — stopped':!seen?'Waiting for ESP32…':fullControls?(armed?'ESP32 · steering + buttons':'ESP32 · release buttons'):'ESP32 · encoder only'):'Keyboard mode'}
+  function applySnapshot(steering,accel,brake,full){const now=performance.now(),recovering=stale||!seen;seen=true;stale=false;lastValid=now;if(recovering){game.keys.clear();disarm()}game.input.blocked=false;game.input.steer=steering;if(full){fullControls=true;if(!armed&&accel===0&&brake===0&&!game.state.paused&&!game.state.crashed)armed=true;game.input.accel=armed?accel:0;game.input.brake=armed?brake:0;game.input.releaseRequired=!armed}else{game.input.accel=game.input.brake=0;game.input.releaseRequired=false}if(recovering)game.message(full?'ESP32 connected. Release both buttons, center the encoder, then accelerate.':'Encoder connected. Use W / S; upload the v2 sketch to enable the physical buttons.');ui()}
+  function parseLine(text){const line=text.trim();let m=/^CTRL:([+-]?\d{1,3}),([01]),([01])$/.exec(line);if(m){const steer=Number(m[1]);if(steer < -100||steer > 100)return false;applySnapshot(steer,Number(m[2]),Number(m[3]),true);return true}m=/^STEER:([+-]?\d{1,3})$/.exec(line);if(m){const steer=Number(m[1]);if(steer < -100||steer > 100)return false;if(!fullControls)applySnapshot(steer,0,0,false);return true}return false}
+  function checkTimeout(now=performance.now()){if(port&&now-lastValid>1500&&!stale){stale=true;game.safeStop();game.input.steer=0;game.input.blocked=true;game.message('Controller signal lost. The car has stopped. Check USB and upload the new sketch.');ui()}}
+  function clearConnection(text){port=null;reader=null;readTask=null;seen=fullControls=stale=armed=false;game.input.serial=false;game.input.blocked=false;game.input.releaseRequired=false;game.input.steer=0;game.safeStop();game.message(text);ui()}
+  async function pump(active){let buffer='';const decoder=new TextDecoder();try{reader=active.readable.getReader();while(port===active&&!closing){const {value,done}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let split;while((split=buffer.indexOf('\n'))>=0){parseLine(buffer.slice(0,split));buffer=buffer.slice(split+1)}if(buffer.length>1024)buffer=''}}catch(error){if(!closing)game.message('USB disconnected. The car has stopped.')}finally{if(reader){reader.releaseLock();reader=null}if(!closing&&port===active){game.safeStop();game.input.blocked=true;try{await active.close()}catch{}clearConnection('ESP32 disconnected. Car stopped. Reconnect, or use the keyboard.')}}}
+  async function disconnect(){if(!port||closing)return;closing=true;const active=port;game.safeStop();ui();try{if(reader)await reader.cancel();if(readTask)await readTask;await active.close()}catch{}finally{closing=false;clearConnection('Disconnected. Car stopped; keyboard controls are available.')}}
+  async function connect(){if(opening||closing)return;if(port)return disconnect();if(!serialAvailable){game.message('Use desktop Chrome or Edge through Live Server at localhost / 127.0.0.1 for USB controls.');return}opening=true;game.safeStop();game.input.blocked=true;ui();try{const chosen=await navigator.serial.requestPort();await chosen.open({baudRate:115200});port=chosen;seen=fullControls=stale=armed=false;lastValid=performance.now();game.input.serial=true;game.input.steer=0;game.pause(false);game.input.blocked=true;game.message('Port open at 115200 baud. Waiting for the ESP32…');readTask=pump(chosen)}catch(error){game.input.blocked=false;game.message(error.name==='NotFoundError'?'No port selected. You can drive with the keyboard.':'Cannot open the port. Close Arduino Serial Monitor and other apps using the ESP32, then reconnect.')}finally{opening=false;ui()}}
+  $('connect').addEventListener('click',connect);
+  if(navigator.serial)navigator.serial.addEventListener('disconnect',event=>{if(event.target===port||event.port===port)void disconnect()});
+  setInterval(checkTimeout,100);
+  if(!serialAvailable)game.message('Keyboard driving is ready. USB needs desktop Chrome or Edge on localhost.');
+  ui();return{parseLine,checkTimeout,connect,disconnect};
+})();
