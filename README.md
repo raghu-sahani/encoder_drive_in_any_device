@@ -1,4 +1,4 @@
-# ROBO Drive - Landscape Fixed (PlatformIO)
+# Encoder Drive - Landscape Fixed (PlatformIO)
 
 This version fixes the **missing/covered car** on phones. The 3D car was hidden under an oversized steering panel due to a mobile CSS grid conflict. Speed and steering now sit in the side corners; the middle of the game stays open. The ESP32 hardware controls are unchanged.
 
